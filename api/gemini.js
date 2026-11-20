@@ -33,8 +33,10 @@ function isAllowedOrigin(origin) {
   if (!origin) return false
   // Any localhost port (dev)
   if (/^https?:\/\/localhost(:\d+)?/.test(origin)) return true
-  // Any *.vercel.app deployment (preview + production)
-  if (/\.vercel\.app$/.test(origin)) return true
+  // Exact production URL
+  if (origin === 'https://aisle-grocery-list.vercel.app') return true
+  // Preview deployments: https://aisle-grocery-list-*.vercel.app
+  if (/^https:\/\/aisle-grocery-list-[^.]+\.vercel\.app$/.test(origin)) return true
   // Custom production domain if configured
   const appUrl = process.env.APP_URL
   if (appUrl && origin.startsWith(appUrl)) return true

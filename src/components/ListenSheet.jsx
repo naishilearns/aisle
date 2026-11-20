@@ -1,40 +1,15 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSpeech } from '../lib/speech'
+import { parseList, splitQuick } from '../lib/gemini'
 import { storeColors } from '../utils/storeColors'
-import { detectStore, detectCategory, getLearnedAssignments } from '../utils/storeDetection'
 import StoreIcon from './StoreIcon'
 
 // Heights (px) for the 15 waveform bars — reference-matched
 const BAR_HEIGHTS = [18, 30, 46, 28, 56, 36, 22, 50, 32, 62, 40, 24, 44, 28, 18]
 
-function toSentenceCase(str) {
-  const s = str.toLowerCase().trim()
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
-
-function quickParseItems(text, allStoreOrder) {
-  if (!text.trim()) return []
-  const learned = getLearnedAssignments()
-  const parts = text.split(/,\s*|\s+and\s+|\s+then\s+/gi)
-  return parts
-    .map(raw => {
-      const trimmed = raw.trim()
-      if (trimmed.length < 2) return null
-      const name = toSentenceCase(trimmed)
-      const learnedId = learned[trimmed.toLowerCase()]
-      const { storeId: kwId, confident } = detectStore(trimmed)
-      const storeId =
-        learnedId && allStoreOrder.includes(learnedId) ? learnedId :
-        confident && kwId && allStoreOrder.includes(kwId) ? kwId :
-        allStoreOrder[0] ?? null
-      if (!storeId) return null
-      const category = detectCategory(trimmed, storeId)
-      return { name, storeId, category, checkStore: !confident && !learnedId }
-    })
-    .filter(Boolean)
-}
-
-// Renders transcript text with store-colored inline pills for parsed item names
+// Renders transcript text with store-colored inline pills for each parsed item.
+// If a parsed item's name can't be found in the raw text, it's silently skipped
+// and the unmatched text shows un-highlighted.
 function TranscriptText({ finalText, parsedItems, allStores, theme, interim }) {
   if (!finalText && !interim) {
     return <span style={{ color: 'var(--text-mid)' }}>Say your grocery list…</span>
@@ -74,47 +49,98 @@ function TranscriptText({ finalText, parsedItems, allStores, theme, interim }) {
 export default function ListenSheet({ open, onClose, onDone, allStores = {}, allStoreOrder = [], theme = 'dark' }) {
   const { listening, interim, finalText, start, stop, error } = useSpeech()
   const [emptyWarning, setEmptyWarning] = useState(false)
+  const [parsedItems, setParsedItems] = useState([])
+  const [isSorting, setIsSorting] = useState(false)
+
+  // Version counter — incremented to cancel stale async parses
+  const liveParseVersionRef = useRef(0)
 
   // Safety: abort recognition if the sheet unmounts unexpectedly
   useEffect(() => {
     return () => stop()
   }, [stop])
 
+  // Reset state when sheet opens/closes
+  useEffect(() => {
+    if (!open) {
+      setParsedItems([])
+      setIsSorting(false)
+      setEmptyWarning(false)
+    }
+  }, [open])
+
+  // Live parse: show splitQuick immediately, then replace with Gemini after 900 ms
+  useEffect(() => {
+    const combined = [finalText, interim].filter(Boolean).join(' ').trim()
+    if (!combined) {
+      setParsedItems([])
+      return
+    }
+
+    // Instant chip display via local fallback
+    setParsedItems(splitQuick(combined, allStoreOrder))
+
+    // Debounce Gemini live parse
+    const version = ++liveParseVersionRef.current
+    const storeOptions = allStoreOrder
+      .filter(id => allStores[id])
+      .map(id => ({ id, ...allStores[id] }))
+
+    const timer = setTimeout(async () => {
+      const result = await parseList(combined, storeOptions)
+      if (liveParseVersionRef.current === version && result?.length) {
+        setParsedItems(result)
+      }
+    }, 900)
+
+    return () => clearTimeout(timer)
+  }, [finalText, interim]) // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleClose() {
     stop()
     onClose()
   }
 
-  function handleMicTap() {
+  async function handleMicTap() {
     if (!listening) {
-      // Start: user gesture — required for iOS
       setEmptyWarning(false)
       start()
       return
     }
 
-    // Done: user finished speaking
+    // User tapped Done
     stop()
     const combined = [finalText, interim].filter(Boolean).join(' ').trim()
     if (!combined) {
       setEmptyWarning(true)
-      return // Stay open — user can tap mic again
+      return
     }
-    const items = quickParseItems(combined, allStoreOrder)
+
+    // Cancel any in-flight live parse
+    liveParseVersionRef.current++
+
+    // Show quick items immediately while Gemini works
+    const quick = splitQuick(combined, allStoreOrder)
+    setParsedItems(quick)
+    setIsSorting(true)
+
+    const storeOptions = allStoreOrder
+      .filter(id => allStores[id])
+      .map(id => ({ id, ...allStores[id] }))
+
+    const geminiItems = await parseList(combined, storeOptions)
+    const items = geminiItems?.length ? geminiItems : quick
+
+    setIsSorting(false)
     onDone?.({ rawText: combined, items })
   }
 
-  const parsedItems = useMemo(
-    () => quickParseItems(finalText, allStoreOrder),
-    [finalText, allStoreOrder]
-  )
-
   // Waveform bar colors: cycle through active stores' ring colors
-  const cycleStores = useMemo(() => {
+  const cycleStores = (() => {
     const preferred = ['fredmeyer', 'tjs', 'indian', 'costco'].filter(id => allStoreOrder.includes(id))
     const rest = allStoreOrder.filter(id => !preferred.includes(id))
     return [...preferred, ...rest]
-  }, [allStoreOrder])
+  })()
 
   const barColors = BAR_HEIGHTS.map((_, i) => {
     const storeId = cycleStores[i % Math.max(cycleStores.length, 1)]
@@ -157,7 +183,7 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
 
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>
           <span style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#FF7BAC', flexShrink: 0 }} />
-          Listening
+          {isSorting ? 'Sorting your list…' : 'Listening'}
         </span>
 
         <span style={{ width: 44, flexShrink: 0 }} />
@@ -186,7 +212,7 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
           </>
         )}
 
-        {/* Item chips */}
+        {/* Item chips — flex-wrap, truncate long names */}
         {parsedItems.length > 0 && (
           <div style={{ marginTop: 26, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {parsedItems.map((item, i) => {
@@ -199,7 +225,8 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
                     display: 'flex', alignItems: 'center', gap: 8,
                     height: 40, padding: '0 14px 0 8px', borderRadius: 20,
                     backgroundColor: bg, color: '#FFFFFF',
-                    fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap',
+                    fontSize: 14, fontWeight: 700,
+                    maxWidth: '100%', minWidth: 0,
                     animation: 'springIn 250ms cubic-bezier(0.34,1.56,0.64,1) both',
                   }}
                 >
@@ -210,7 +237,9 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
                   }}>
                     <StoreIcon storeId={item.storeId} size={15} color="#FFFFFF" strokeWidth={2.1} />
                   </span>
-                  {item.name}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.name}
+                  </span>
                 </span>
               )
             })}
@@ -259,13 +288,16 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
           )}
           <button
             onClick={handleMicTap}
+            disabled={isSorting}
             aria-label={listening ? 'Stop listening' : 'Start listening'}
             style={{
               position: 'relative', width: 88, height: 88, borderRadius: 44,
               border: 0, backgroundColor: '#FF7BAC', color: '#FFFFFF',
               boxShadow: '0 8px 22px rgba(255,123,172,.45)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer',
+              cursor: isSorting ? 'default' : 'pointer',
+              opacity: isSorting ? 0.6 : 1,
+              transition: 'opacity 200ms ease',
             }}
           >
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flex: 'none' }}>
@@ -275,7 +307,7 @@ export default function ListenSheet({ open, onClose, onDone, allStores = {}, all
           </button>
         </div>
         <p style={{ margin: '16px 0 0', fontSize: 14, fontWeight: 700, color: 'var(--text-mid)' }}>
-          {listening ? "Tap when you're done" : "Tap to start"}
+          {isSorting ? 'One sec…' : listening ? "Tap when you're done" : 'Tap to start'}
         </p>
       </div>
     </div>

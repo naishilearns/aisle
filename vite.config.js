@@ -3,6 +3,13 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  server: {
+    // In dev, forward /api/* to `vercel dev` running on port 3000.
+    // Run: vercel dev (terminal 1) + npm run dev (terminal 2)
+    proxy: {
+      '/api': 'http://localhost:3000',
+    },
+  },
   plugins: [
     react(),
     VitePWA({

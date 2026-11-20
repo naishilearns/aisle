@@ -2,7 +2,7 @@
 // All Gemini calls go through here; GEMINI_API_KEY never reaches the browser.
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-const MODEL = 'gemini-3.8-flash'
+const MODELS = ['gemini-3.8-flash', 'gemini-flash-latest'] // primary, then backup if primary is overloaded
 const MAX_TEXT_LEN = 2000
 const MAX_ITEMS = 50
 const RL_WINDOW_MS = 60_000
@@ -143,16 +143,29 @@ export default async function handler(req, res) {
   const key = process.env.GEMINI_API_KEY
   if (!key) return res.status(503).json({ error: 'Service unavailable' })
 
-  const genAI = new GoogleGenerativeAI(key)
-  const model = genAI.getGenerativeModel({ model: MODEL })
+  if (task !== 'sort' && task !== 'parse') return res.status(400).json({ error: 'Unknown task' })
 
-  try {
-    if (task === 'sort') return await handleSort(model, payload, res)
-    if (task === 'parse') return await handleParse(model, payload, res)
-    return res.status(400).json({ error: 'Unknown task' })
-  } catch (err) {
-    // Never expose upstream errors or keys
-    console.error('[api/gemini]', err.message)
-    return res.status(500).json({ error: 'Service error' })
+  const genAI = new GoogleGenerativeAI(key)
+  const run = (model) =>
+    task === 'sort' ? handleSort(model, payload, res) : handleParse(model, payload, res)
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+  const isBusy = (e) => /\b(503|429|500)\b|overload|high demand|unavailable|quota/i.test(e?.message || '')
+
+  // Try each model; retry the same model once on a transient error, then fall back.
+  let lastErr
+  for (const name of MODELS) {
+    const model = genAI.getGenerativeModel({ model: name })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await run(model)
+      } catch (err) {
+        lastErr = err
+        console.error(`[api/gemini] ${name} attempt ${attempt + 1}:`, err.message)
+        if (!isBusy(err)) break          // not transient: go to next model
+        await sleep(700 * (attempt + 1))
+      }
+    }
   }
+  // Never expose upstream errors or keys
+  return res.status(502).json({ error: 'Service busy, try again' })
 }

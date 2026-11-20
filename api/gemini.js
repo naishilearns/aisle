@@ -1,7 +1,7 @@
 // Vercel serverless function — POST /api/gemini
 // All Gemini calls go through here; GEMINI_API_KEY never reaches the browser.
 
-const MODELS = ['gemini-3.8-flash', 'gemini-flash-latest'] // primary, then backup if primary is overloaded
+const MODELS = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-flash-lite-latest', 'gemini-flash-latest'] // tried in order; skips to the next on 503/404/timeout
 const MAX_TEXT_LEN = 2000
 const MAX_ITEMS = 50
 const RL_WINDOW_MS = 60_000
@@ -159,7 +159,7 @@ export default async function handler(req, res) {
           },
         }
         const ctrl = new AbortController()
-        const t = setTimeout(() => ctrl.abort(), 9000)
+        const t = setTimeout(() => ctrl.abort(), 4500)
         try {
           return await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${name}:generateContent`,

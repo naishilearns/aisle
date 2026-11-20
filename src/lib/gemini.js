@@ -38,7 +38,7 @@ export async function parseList(rawText, storeOptions) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: 'parse', payload: { rawText, storeOptions } }),
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
     ])
     if (!res.ok) return null
     const items = await res.json()

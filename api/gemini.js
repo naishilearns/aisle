@@ -148,22 +148,18 @@ export default async function handler(req, res) {
   const genAI = new GoogleGenerativeAI(key)
   const run = (model) =>
     task === 'sort' ? handleSort(model, payload, res) : handleParse(model, payload, res)
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-  const isBusy = (e) => /\b(503|429|500)\b|overload|high demand|unavailable|quota/i.test(e?.message || '')
 
-  // Try each model; retry the same model once on a transient error, then fall back.
+  // Try each model once, each capped at 5s so a hung/overloaded model fails fast.
+  const withTimeout = (p, ms) =>
+    Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 503')), ms))])
   let lastErr
   for (const name of MODELS) {
     const model = genAI.getGenerativeModel({ model: name })
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        return await run(model)
-      } catch (err) {
-        lastErr = err
-        console.error(`[api/gemini] ${name} attempt ${attempt + 1}:`, err.message)
-        if (!isBusy(err)) break          // not transient: go to next model
-        await sleep(700 * (attempt + 1))
-      }
+    try {
+      return await withTimeout(run(model), 5000)
+    } catch (err) {
+      lastErr = err
+      console.error(`[api/gemini] ${name}:`, err.message)
     }
   }
   // Never expose upstream errors or keys

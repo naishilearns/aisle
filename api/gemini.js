@@ -95,15 +95,13 @@ async function handleParse(model, payload, res) {
     `Return ONLY a JSON array. Example:\n` +
     `[{"name":"Greek yogurt","storeId":"fredmeyer","category":"Dairy"},{"name":"Basmati rice","storeId":"indian","category":"Pantry"}]`
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json' },
-  })
+  const result = await model.generateContent(prompt)
 
   let text = result.response.text().trim()
   if (text.startsWith('```')) text = text.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim()
 
-  const arr = JSON.parse(text)
+  const m = text.match(/\[[\s\S]*\]/)
+  const arr = JSON.parse(m ? m[0] : text)
   if (!Array.isArray(arr)) return res.status(200).json([])
 
   const validIds = new Set(storeOptions.map(s => s.id))

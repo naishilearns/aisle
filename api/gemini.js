@@ -1,6 +1,5 @@
 // Vercel serverless function — POST /api/gemini
 // All Gemini calls go through here; GEMINI_API_KEY never reaches the browser.
-import { GoogleGenerativeAI } from '@google/generative-ai'
 
 const MODELS = ['gemini-3.8-flash', 'gemini-flash-latest'] // primary, then backup if primary is overloaded
 const MAX_TEXT_LEN = 2000
@@ -145,21 +144,52 @@ export default async function handler(req, res) {
 
   if (task !== 'sort' && task !== 'parse') return res.status(400).json({ error: 'Unknown task' })
 
-  const genAI = new GoogleGenerativeAI(key)
+  // Direct REST call (no SDK) so we can turn off "thinking" for speed.
+  const makeModel = (name) => ({
+    async generateContent(input) {
+      const base = typeof input === 'string'
+        ? { contents: [{ role: 'user', parts: [{ text: input }] }] }
+        : { ...input }
+      const call = async (withThinking) => {
+        const body = {
+          ...base,
+          generationConfig: {
+            ...(base.generationConfig || {}),
+            ...(withThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          },
+        }
+        const ctrl = new AbortController()
+        const t = setTimeout(() => ctrl.abort(), 9000)
+        try {
+          return await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${name}:generateContent`,
+            { method: 'POST', signal: ctrl.signal,
+              headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+              body: JSON.stringify(body) })
+        } finally { clearTimeout(t) }
+      }
+      let r = await call(true)
+      if (r.status === 400) r = await call(false) // model rejects thinking config
+      if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 300)}`)
+      const data = await r.json()
+      const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('')
+      return { response: { text: () => text } }
+    },
+  })
   const run = (model) =>
     task === 'sort' ? handleSort(model, payload, res) : handleParse(model, payload, res)
 
-  // Try each model once, each capped at 5s so a hung/overloaded model fails fast.
-  const withTimeout = (p, ms) =>
-    Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 503')), ms))])
+  // Try each model once; log how long each took.
   let lastErr
   for (const name of MODELS) {
-    const model = genAI.getGenerativeModel({ model: name })
+    const t0 = Date.now()
     try {
-      return await withTimeout(run(model), 5000)
+      const out = await run(makeModel(name))
+      console.log(`[api/gemini] ${name} ok in ${Date.now() - t0}ms`)
+      return out
     } catch (err) {
       lastErr = err
-      console.error(`[api/gemini] ${name}:`, err.message)
+      console.error(`[api/gemini] ${name} failed after ${Date.now() - t0}ms:`, err.message)
     }
   }
   // Never expose upstream errors or keys

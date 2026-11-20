@@ -18,7 +18,7 @@ export async function suggestItem(itemName, storeOptions) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: 'sort', payload: { itemName, storeOptions } }),
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
     ])
     if (!res.ok) return null
     return await res.json()
@@ -38,7 +38,7 @@ export async function parseList(rawText, storeOptions) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: 'parse', payload: { rawText, storeOptions } }),
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000)),
     ])
     if (!res.ok) return null
     const items = await res.json()

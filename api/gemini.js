@@ -2,7 +2,7 @@
 // All Gemini calls go through here; GEMINI_API_KEY never reaches the browser.
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-const MODEL = 'gemini-2.5-flash'
+const MODEL = 'gemini-3.8-flash'
 const MAX_TEXT_LEN = 2000
 const MAX_ITEMS = 50
 const RL_WINDOW_MS = 60_000
